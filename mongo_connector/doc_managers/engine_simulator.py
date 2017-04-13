@@ -23,6 +23,7 @@ implementation with real systems.
 import subprocess
 import multiprocessing
 import requests
+import json
 
 from mongo_connector import constants
 from mongo_connector.doc_managers.doc_manager_base import DocManagerBase
@@ -31,23 +32,13 @@ __version__ = constants.__version__
 """DocManager Simulator version information
 
 """
-base_url = 'http://localhost:5000/api'
+base_url = 'http://localhost/api'
 data_folder = '/home/ubuntu/data'
 headers = {
     'X-SciTran-Auth' : 'coralhero2',
     'X-SciTran-Name' :'Coral Drone Reaper',
     'X-SciTran-Method':'GET'
 }
-
-def upload_file(container_type, container_id, filepath, filedata):
-    cont = container_type + 's'
-    url = '/'.join([base_url, cont, container_id, 'files'])
-    files = {
-        'metadata': ('', json.dumps(filedata)),
-        'file': open(filepath, 'rb')
-    }
-    r = requests.post(url, files=files, headers=headers)
-    return r
 
 def run_job(doc):
     print 'job {} started'.format(doc['_id'])
@@ -59,7 +50,14 @@ def run_job(doc):
         'files',
         input_file['name']
     ])
+    print url
+    print headers
     r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        print 'job {} failed'.format(doc['_id'])
+        return
+    with open('/'.join([data_folder, input_file['name']]), 'w') as f:
+        f.write(r.content)
     command = ('sudo docker run --rm -v {}:/data' +
         ' -w /coralAnalysis hblasins/coral-analysis ./analyzeRAWImage' +
         ' /data/{}').format(
@@ -69,9 +67,23 @@ def run_job(doc):
     retcode = subprocess.call(command.split())
     if retcode == 0:
         output_filename = input_file['name'].split('.')[0] + '.json'
-        r = upload_file(input_file['type'], input_file['id'],
-            '/'.join(data_folder, output_filename), {}
-            )
+        cont = input_file['type'] + 's'
+        url = '/'.join([base_url, cont, input_file['id'], 'files'])
+        print output_filename, cont, url
+        files = {
+            'metadata': ('', json.dumps({})),
+            'file': open('/'.join([data_folder, output_filename]), 'rb')
+        }
+        r = requests.post(url, files=files, headers=headers)
+        if r.status_code == 200:
+            print 'json uploaded for job {} '.format(doc['_id'])
+        output_filename = input_file['name'].split('.')[0] + '_thumb.jpg'
+        print output_filename, cont, url
+        files = {
+            'metadata': ('', json.dumps({})),
+            'file': open('/'.join([data_folder, output_filename]), 'rb')
+        }
+        r = requests.post(url, files=files, headers=headers)
         if r.status_code == 200:
             print 'job {} completed'.format(doc['_id'])
             return
@@ -126,7 +138,8 @@ class DocManager(DocManagerBase):
         if doc.get('_upsert_exception'):
             raise Exception("upsert exception")
         self.last_doc = doc
-        g = self.pool.apply_async(run_job, doc)
+        print doc
+        g = self.pool.apply_async(run_job, (doc,))
 
     def insert_file(self, f, namespace, timestamp):
         """Inserts a file to the doc dict.
